@@ -110,7 +110,7 @@ user.age = 25;
 await repository.save(user);
 
 const allUsers = await repository.find();
-const firstUser = await repository.findOneById(1);
+const firstUser = await repository.findOne(1); // find by id
 const timber = await repository.findOne({ firstName: "Timber", lastName: "Saw" });
 
 await repository.remove(timber);
@@ -149,7 +149,7 @@ user.age = 25;
 await user.save();
 
 const allUsers = await User.find();
-const firstUser = await User.findOneById(1);
+const firstUser = await User.findOne(1);
 const timber = await User.findOne({ firstName: "Timber", lastName: "Saw" });
 
 await timber.remove();
@@ -178,7 +178,7 @@ await timber.remove();
 
     * for **MySQL** or **MariaDB**
     
-        `npm install mysql --save`
+        `npm install mysql --save` (you can install `mysql2` instead as well)
     
     * for **PostgreSQL**
     
@@ -310,7 +310,7 @@ creating more entities.
 
 What are you expecting from ORM?
 First of all, you are expecting it will create database tables for you
-and find / insert / update / delete your data without the pain of  
+and find / insert / update / delete your data without the pain of
 having to write lots of hardly maintainable SQL queries.
 This guide will show you how to setup TypeORM from scratch and make it do what you are expecting from an ORM.
 
@@ -336,7 +336,7 @@ export class Photo {
 And you want to store photos in your database.
 To store things in the database, first you need a database table,
 and database tables are created from your models.
-Not all models, but only those you define as *entities*. 
+Not all models, but only those you define as *entities*.
         
 ### Create an entity
 
@@ -402,12 +402,12 @@ Column types in the database are inferred from the property types you used, e.g.
 But you can use any column type your database supports by implicitly specifying a column type into the `@Column` decorator.
 
 We generated a database table with columns, but there is one thing left.
-Each database table must have a column with a primary key. 
+Each database table must have a column with a primary key.
 
 ### Creating a primary column
 
 Each entity **must** have at least one primary key column.
-This is a requirement and you can't avoid it. 
+This is a requirement and you can't avoid it.
 To make a column a primary key, you need to use `@PrimaryColumn` decorator.
 
 ```typescript
@@ -715,7 +715,7 @@ createConnection(/*...*/).then(async connection => {
     let allPhotos = await photoRepository.find();
     console.log("All photos from the db: ", allPhotos);
 
-    let firstPhoto = await photoRepository.findOneById(1);
+    let firstPhoto = await photoRepository.findOne(1);
     console.log("First photo from the db: ", firstPhoto);
 
     let meAndBearsPhoto = await photoRepository.findOne({ name: "Me and Bears" });
@@ -745,7 +745,7 @@ import {Photo} from "./entity/Photo";
 createConnection(/*...*/).then(async connection => {
 
     /*...*/
-    let photoToUpdate = await photoRepository.findOneById(1);
+    let photoToUpdate = await photoRepository.findOne(1);
     photoToUpdate.name = "Me, my friends and polar bears";
     await photoRepository.save(photoToUpdate);
 
@@ -765,7 +765,7 @@ import {Photo} from "./entity/Photo";
 createConnection(/*...*/).then(async connection => {
 
     /*...*/
-    let photoToRemove = await photoRepository.findOneById(1);
+    let photoToRemove = await photoRepository.findOne(1);
     await photoRepository.remove(photoToRemove);
 
 }).catch(error => console.log(error));
@@ -809,8 +809,8 @@ export class PhotoMetadata {
 }
 ```
      
-Here, we are using a new decorator called `@OneToOne`. It allows us to create a one-to-one relationship between two entities. 
-`type => Photo` is a function that returns the class of the entity with which we want to make our relationship. 
+Here, we are using a new decorator called `@OneToOne`. It allows us to create a one-to-one relationship between two entities.
+`type => Photo` is a function that returns the class of the entity with which we want to make our relationship.
 We are forced to use a function that returns a class, instead of using the class directly, because of the language specifics.
 We can also write it as `() => Photo`, but we use `type => Photo` as a convention to increase code readability.
 The type variable itself does not contain anything.
@@ -986,20 +986,13 @@ export class Photo {
     /// ... other columns
 
     @OneToOne(type => PhotoMetadata, metadata => metadata.photo, {
-        cascadeInsert: true,
-        cascadeUpdate: true,
-        cascadeRemove: true
+        cascade: true,
     })
     metadata: PhotoMetadata;
 }
 ```
 
-* **cascadeInsert** - automatically insert metadata in the relation if it does not exist in its table. 
-    This means that we don't need to manually insert a newly created `photoMetadata` object.
-* **cascadeUpdate** - automatically update metadata in the relation if something is changed in this object.
-* **cascadeRemove** - automatically remove metadata from its table if you removed metadata from photo object.
-
-Using `cascadeInsert` allows us to not have to separately save photo and metadata objects now. 
+Using `cascade` allows us not to separately save photo and separately save metadata objects now.
 Now we can simply save a photo object, and the metadata object will be saved automatically because of cascade options.
 
 ```typescript
@@ -1009,7 +1002,7 @@ createConnection(options).then(async connection => {
     let photo = new Photo();
     photo.name = "Me and Bears";
     photo.description = "I am near polar bears";
-    photo.filename = "photo-with-bears.jpg"
+    photo.filename = "photo-with-bears.jpg";
     photo.isPublished = true;
 
     // create photo metadata object
@@ -1190,7 +1183,7 @@ await connection.manager.save(photo);
 // now lets load them:
 const loadedPhoto = await connection
     .getRepository(Photo)
-    .findOneById(1, { relations: ["albums"] });
+    .findOne(1, { relations: ["albums"] });
 ```
 
 `loadedPhoto` will be equal to:

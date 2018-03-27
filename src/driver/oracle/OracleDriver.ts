@@ -12,14 +12,14 @@ import {OracleConnectionOptions} from "./OracleConnectionOptions";
 import {MappedColumnTypes} from "../types/MappedColumnTypes";
 import {ColumnType} from "../types/ColumnTypes";
 import {DataTypeDefaults} from "../types/DataTypeDefaults";
-import {TableColumn} from "../../schema-builder/schema/TableColumn";
+import {TableColumn} from "../../schema-builder/table/TableColumn";
 import {OracleConnectionCredentialsOptions} from "./OracleConnectionCredentialsOptions";
 import {DriverUtils} from "../DriverUtils";
+import {EntityMetadata} from "../../metadata/EntityMetadata";
+import {OrmUtils} from "../../util/OrmUtils";
 
 /**
  * Organizes communication with Oracle RDBMS.
- *
- * todo: this driver is not 100% finished yet, need to fix all issues that are left
  */
 export class OracleDriver implements Driver {
 
@@ -88,6 +88,7 @@ export class OracleDriver implements Driver {
         "long raw",
         "number",
         "numeric",
+        "float",
         "dec",
         "decimal",
         "integer",
@@ -99,8 +100,8 @@ export class OracleDriver implements Driver {
         "timestamp",
         "timestamp with time zone",
         "timestamp with local time zone",
-        "interval year",
-        "interval day",
+        "interval year to month",
+        "interval day to second",
         "bfile",
         "blob",
         "clob",
@@ -116,35 +117,54 @@ export class OracleDriver implements Driver {
         "char",
         "nchar",
         "nvarchar2",
-        "varchar2"
+        "varchar2",
+        "varchar",
+        "raw"
     ];
+
+    /**
+     * Gets list of column data types that support precision by a driver.
+     */
+    withPrecisionColumnTypes: ColumnType[] = [];
+
+    /**
+     * Gets list of column data types that support scale by a driver.
+     */
+    withScaleColumnTypes: ColumnType[] = [];
 
     /**
      * Orm has special columns and we need to know what database column types should be for those types.
      * Column types are driver dependant.
      */
     mappedDataTypes: MappedColumnTypes = {
-        createDate: "datetime",
+        createDate: "timestamp",
         createDateDefault: "CURRENT_TIMESTAMP",
-        updateDate: "datetime",
+        updateDate: "timestamp",
         updateDateDefault: "CURRENT_TIMESTAMP",
         version: "number",
         treeLevel: "number",
-        migrationName: "nvarchar",
-        migrationTimestamp: "timestamp",
-        cacheId: "int",
-        cacheIdentifier: "nvarchar",
-        cacheTime: "timestamp",
-        cacheDuration: "int",
-        cacheQuery: "text",
-        cacheResult: "text",
+        migrationName: "varchar2",
+        migrationTimestamp: "number",
+        cacheId: "number",
+        cacheIdentifier: "varchar2",
+        cacheTime: "number",
+        cacheDuration: "number",
+        cacheQuery: "clob",
+        cacheResult: "clob",
     };
 
     /**
      * Default values of length, precision and scale depends on column data type.
      * Used in the cases when length/precision/scale is not specified by user.
      */
-    dataTypeDefaults: DataTypeDefaults;
+    dataTypeDefaults: DataTypeDefaults = {
+        "char": { length: 1 },
+        "nchar": { length: 1 },
+        "varchar": { length: 255 },
+        "varchar2": { length: 255 },
+        "nvarchar2": { length: 255 },
+        "raw": { length: 2000 }
+    };
 
     // -------------------------------------------------------------------------
     // Constructor
@@ -181,7 +201,8 @@ export class OracleDriver implements Driver {
      * either create a pool and create connection when needed.
      */
     async connect(): Promise<void> {
-
+        this.oracle.fetchAsString = [ this.oracle.CLOB ];
+        this.oracle.fetchAsBuffer = [ this.oracle.BLOB ];
         if (this.options.replication) {
             this.slaves = await Promise.all(this.options.replication.slaves.map(slave => {
                 return this.createPool(this.options, slave);
@@ -233,15 +254,37 @@ export class OracleDriver implements Driver {
      * Replaces parameters in the given sql with special escaping character
      * and an array of parameter names to be passed to a query.
      */
-    escapeQueryWithParameters(sql: string, parameters: ObjectLiteral): [string, any[]] {
+    escapeQueryWithParameters(sql: string, parameters: ObjectLiteral, nativeParameters: ObjectLiteral): [string, any[]] {
+        const escapedParameters: any[] = Object.keys(nativeParameters).map(key => {
+            if (typeof nativeParameters[key] === "boolean")
+                return nativeParameters[key] ? 1 : 0;
+            return nativeParameters[key];
+        });
         if (!parameters || !Object.keys(parameters).length)
-            return [sql, []];
-        const escapedParameters: any[] = [];
-        const keys = Object.keys(parameters).map(parameter => "(:" + parameter + "\\b)").join("|");
+            return [sql, escapedParameters];
+
+        const keys = Object.keys(parameters).map(parameter => "(:(\\.\\.\\.)?" + parameter + "\\b)").join("|");
         sql = sql.replace(new RegExp(keys, "g"), (key: string) => {
-            const value = parameters[key.substr(1)];
-            if (value instanceof Function) {
+            let value: any;
+            let isArray = false;
+            if (key.substr(0, 4) === ":...") {
+                isArray = true;
+                value = parameters[key.substr(4)];
+            } else {
+                value = parameters[key.substr(1)];
+            }
+
+            if (isArray) {
+                return value.map((v: any, index: number) => {
+                    escapedParameters.push(v);
+                    return `:${key.substr(4)}${index}`;
+                }).join(", ");
+
+            } else if (value instanceof Function) {
                 return value();
+
+            } else if (typeof value === "boolean") {
+                return value ? 1 : 0;
 
             } else {
                 escapedParameters.push(value);
@@ -259,6 +302,14 @@ export class OracleDriver implements Driver {
     }
 
     /**
+     * Build full table name with database name, schema name and table name.
+     * Oracle does not support table schemas. One user can have only one schema.
+     */
+    buildTableName(tableName: string, schema?: string, database?: string): string {
+        return tableName;
+    }
+
+    /**
      * Prepares given value to a value to be persisted, based on its column type and metadata.
      */
     preparePersistentValue(value: any, columnMetadata: ColumnMetadata): any {
@@ -269,19 +320,18 @@ export class OracleDriver implements Driver {
             return value;
 
         if (columnMetadata.type === Boolean) {
-            return value === true ? 1 : 0;
+            return value ? 1 : 0;
 
         } else if (columnMetadata.type === "date") {
-            return DateUtils.mixedDateToDateString(value);
+            if (typeof value === "string")
+                value = value.replace(/[^0-9-]/g, "");
+            return () => `TO_DATE('${DateUtils.mixedDateToDateString(value)}', 'YYYY-MM-DD')`;
 
-        } else if (columnMetadata.type === "time") {
-            return DateUtils.mixedDateToTimeString(value);
-
-        } else if (columnMetadata.type === "datetime" || columnMetadata.type === Date) {
-            return DateUtils.mixedDateToUtcDatetimeString(value);
-
-        } else if (columnMetadata.type === "json") {
-            return JSON.stringify(value);
+        } else if (columnMetadata.type === Date
+            || columnMetadata.type === "timestamp"
+            || columnMetadata.type === "timestamp with time zone"
+            || columnMetadata.type === "timestamp with local time zone") {
+            return DateUtils.mixedDateToDate(value, true, true);
 
         } else if (columnMetadata.type === "simple-array") {
             return DateUtils.simpleArrayToString(value);
@@ -301,10 +351,7 @@ export class OracleDriver implements Driver {
             return value;
 
         if (columnMetadata.type === Boolean) {
-            value = value ? true : false;
-
-        } else if (columnMetadata.type === "datetime") {
-            value = DateUtils.normalizeHydratedDate(value);
+            value = value === 1 ? true : false;
 
         } else if (columnMetadata.type === "date") {
             value = DateUtils.mixedDateToDateString(value);
@@ -312,12 +359,19 @@ export class OracleDriver implements Driver {
         } else if (columnMetadata.type === "time") {
             value = DateUtils.mixedTimeToString(value);
 
+        } else if (columnMetadata.type === Date
+            || columnMetadata.type === "datetime"
+            || columnMetadata.type === "timestamp"
+            || columnMetadata.type === "timestamp with time zone"
+            || columnMetadata.type === "timestamp with local time zone") {
+            value = DateUtils.normalizeHydratedDate(value);
+
         } else if (columnMetadata.type === "json") {
             value = JSON.parse(value);
 
         } else if (columnMetadata.type === "simple-array") {
             value = DateUtils.stringToSimpleArray(value);
-            
+
         } else if (columnMetadata.type === "simple-json") {
             value = DateUtils.stringToSimpleJson(value);
         }
@@ -331,51 +385,58 @@ export class OracleDriver implements Driver {
     /**
      * Creates a database type from a given column metadata.
      */
-    normalizeType(column: { type?: ColumnType, length?: number | string, precision?: number, scale?: number, isArray?: boolean }): string {
-        let type = "";
+    normalizeType(column: { type?: ColumnType, length?: number|string, precision?: number, scale?: number, isArray?: boolean }): string {
         if (column.type === Number) {
-            type += "integer";
+            return "number";
 
-        } else if (column.type === String) {
-            type += "nvarchar2";
+        } else if (column.type === String || column.type === "varchar") {
+            return "varchar2";
 
         } else if (column.type === Date) {
-            type += "timestamp(0)";
+            return "timestamp";
+
+        } else if ((column.type as any) === Buffer) {
+            return "blob";
 
         } else if (column.type === Boolean) {
-            type += "number(1)";
+            column.precision = 1;
+            return "number";
+
+        } else if (column.type === "uuid") {
+            column.length = 36;
+            return "varchar2";
 
         } else if (column.type === "simple-array") {
-            type += "text";
+            return "clob";
 
         } else if (column.type === "simple-json") {
-            type += "text";
+            return "clob";
 
         } else {
-            type += column.type;
+            return column.type as string || "";
         }
-
-        return type;
     }
 
     /**
      * Normalizes "default" value of the column.
      */
-    normalizeDefault(column: ColumnMetadata): string {
-        if (typeof column.default === "number") {
-            return "" + column.default;
+    normalizeDefault(columnMetadata: ColumnMetadata): string {
+        const defaultValue = columnMetadata.default;
 
-        } else if (typeof column.default === "boolean") {
-            return column.default === true ? "true" : "false";
+        if (typeof defaultValue === "number") {
+            return "" + defaultValue;
 
-        } else if (typeof column.default === "function") {
-            return column.default();
+        } else if (typeof defaultValue === "boolean") {
+            return defaultValue === true ? "1" : "0";
 
-        } else if (typeof column.default === "string") {
-            return `'${column.default}'`;
+        } else if (typeof defaultValue === "function") {
+            return defaultValue();
+
+        } else if (typeof defaultValue === "string") {
+            return `'${defaultValue}'`;
 
         } else {
-            return column.default;
+            return defaultValue;
         }
     }
 
@@ -383,16 +444,15 @@ export class OracleDriver implements Driver {
      * Normalizes "isUnique" value of the column.
      */
     normalizeIsUnique(column: ColumnMetadata): boolean {
-        return column.isUnique;
+        return column.entityMetadata.uniques.some(uq => uq.columns.length === 1 && uq.columns[0] === column);
     }
 
     /**
      * Calculates column length taking into account the default length values.
      */
     getColumnLength(column: ColumnMetadata): string {
-
         if (column.length)
-            return column.length;
+            return column.length.toString();
 
         const normalizedType = this.normalizeType(column) as string;
         if (this.dataTypeDefaults && this.dataTypeDefaults[normalizedType] && this.dataTypeDefaults[normalizedType].length)
@@ -406,14 +466,21 @@ export class OracleDriver implements Driver {
 
         if (column.length) {
             type += "(" + column.length + ")";
-        } else if (column.precision && column.scale) {
+        } else if (column.precision !== null && column.precision !== undefined && column.scale !== null && column.scale !== undefined) {
             type += "(" + column.precision + "," + column.scale + ")";
-        } else if (column.precision) {
-            type +=  "(" + column.precision + ")";
-        } else if (column.scale) {
-            type +=  "(" + column.scale + ")";
-        } else  if (this.dataTypeDefaults && this.dataTypeDefaults[column.type] && this.dataTypeDefaults[column.type].length) {
-            type +=  "(" + this.dataTypeDefaults[column.type].length!.toString() + ")";
+        } else if (column.precision !== null && column.precision !== undefined) {
+            type += "(" + column.precision + ")";
+        } else if (column.scale !== null && column.scale !== undefined) {
+            type += "(" + column.scale + ")";
+        } else if (this.dataTypeDefaults && this.dataTypeDefaults[column.type] && this.dataTypeDefaults[column.type].length) {
+            type += "(" + this.dataTypeDefaults[column.type].length!.toString() + ")";
+        }
+
+        if (column.type === "timestamp with time zone") {
+            type = "TIMESTAMP" + (column.precision !== null && column.precision !== undefined ? "(" + column.precision + ")" : "") + " WITH TIME ZONE";
+
+        } else if (column.type === "timestamp with local time zone") {
+            type = "TIMESTAMP" + (column.precision !== null && column.precision !== undefined ? "(" + column.precision + ")" : "") + " WITH LOCAL TIME ZONE";
         }
 
         if (column.isArray)
@@ -453,6 +520,95 @@ export class OracleDriver implements Driver {
                 ok(connection);
             });
         });
+    }
+
+    /**
+     * Creates generated map of values generated or returned by database after INSERT query.
+     */
+    createGeneratedMap(metadata: EntityMetadata, insertResult: ObjectLiteral) {
+        if (!insertResult)
+            return undefined;
+
+        return Object.keys(insertResult).reduce((map, key) => {
+            const column = metadata.findColumnWithDatabaseName(key);
+            if (column) {
+                OrmUtils.mergeDeep(map, column.createValueMap(insertResult[key]));
+            }
+            return map;
+        }, {} as ObjectLiteral);
+    }
+
+    /**
+     * Differentiate columns of this table and columns from the given column metadatas columns
+     * and returns only changed.
+     */
+    findChangedColumns(tableColumns: TableColumn[], columnMetadatas: ColumnMetadata[]): ColumnMetadata[] {
+        return columnMetadatas.filter(columnMetadata => {
+            const tableColumn = tableColumns.find(c => c.name === columnMetadata.databaseName);
+            if (!tableColumn)
+                return false; // we don't need new columns, we only need exist and changed
+
+            return tableColumn.name !== columnMetadata.databaseName
+                || tableColumn.type !== this.normalizeType(columnMetadata)
+                // || tableColumn.comment !== columnMetadata.comment || // todo
+                || this.normalizeDefault(columnMetadata) !== tableColumn.default
+                || tableColumn.isPrimary !== columnMetadata.isPrimary
+                || tableColumn.isNullable !== columnMetadata.isNullable
+                || tableColumn.isUnique !== this.normalizeIsUnique(columnMetadata)
+                || (columnMetadata.generationStrategy !== "uuid" && tableColumn.isGenerated !== columnMetadata.isGenerated)
+                || !this.compareColumnLengths(tableColumn, columnMetadata);
+        });
+    }
+
+    /**
+     * Returns true if driver supports RETURNING / OUTPUT statement.
+     */
+    isReturningSqlSupported(): boolean {
+        return true;
+    }
+
+    /**
+     * Returns true if driver supports uuid values generation on its own.
+     */
+    isUUIDGenerationSupported(): boolean {
+        return false;
+    }
+
+    /**
+     * Creates an escaped parameter.
+     */
+    createParameter(parameterName: string, index: number): string {
+        return ":" + parameterName;
+    }
+
+    /**
+     * Converts column type in to native oracle type.
+     */
+    columnTypeToNativeParameter(type: ColumnType): any {
+        switch (this.normalizeType({ type: type as any })) {
+            case "number":
+            case "numeric":
+            case "int":
+            case "integer":
+            case "smallint":
+            case "dec":
+            case "decimal":
+                return this.oracle.NUMBER;
+            case "char":
+            case "nchar":
+            case "nvarchar2":
+            case "varchar2":
+                return this.oracle.STRING;
+            case "blob":
+                return this.oracle.BLOB;
+            case "clob":
+                return this.oracle.CLOB;
+            case "date":
+            case "timestamp":
+            case "timestamp with time zone":
+            case "timestamp with local time zone":
+                return this.oracle.DATE;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -505,6 +661,23 @@ export class OracleDriver implements Driver {
             pool.close((err: any) => err ? fail(err) : ok());
             pool = undefined;
         });
+    }
+
+    /**
+     * Compare column lengths only if the datatype supports it.
+     */
+    protected compareColumnLengths(tableColumn: TableColumn, columnMetadata: ColumnMetadata): boolean {
+        const normalizedColumn = this.normalizeType(columnMetadata) as ColumnType;
+        if (this.withLengthColumnTypes.indexOf(normalizedColumn) !== -1) {
+            let metadataLength = this.getColumnLength(columnMetadata);
+
+            // if we found something to compare with then do it, else skip it
+            // use use case insensitive comparison to catch "MAX" vs "Max" case
+            if (metadataLength !== null && metadataLength !== undefined)
+                return tableColumn.length.toString().toLowerCase() === metadataLength.toLowerCase();
+        }
+
+        return true;
     }
 
 }

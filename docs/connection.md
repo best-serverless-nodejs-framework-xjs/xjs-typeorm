@@ -187,7 +187,7 @@ export class UserController {
     
     @Get("/users/:id")
     getAll(@Param("id") userId: number) {
-        return getRepository(User).findOneById(User);
+        return getRepository(User).findOne(userId);
     }
     
 }

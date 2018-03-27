@@ -178,16 +178,16 @@ When you save entities using `save` it always tries to find a entity in the data
 If id/ids are found then it will update this row in the database. 
 If there is no row with the id/ids, a new row will be inserted.
  
-To find a entity by id you can use `manager.findOneById` or `repository.findOneById`. Example:
+To find a entity by id you can use `manager.findOne` or `repository.findOne`. Example:
 
 ```typescript
 // find one by id with single primary key
-const person = await connection.manager.findOneById(Person, 1);
-const person = await connection.getRepository(Person).findOneById(1);
+const person = await connection.manager.findOne(Person, 1);
+const person = await connection.getRepository(Person).findOne(1);
 
 // find one by id with composite primary keys
-const user = await connection.manager.findOneById(User, { firstName: "Umed", lastName: "Khudoiberdiev" });
-const user = await connection.getRepository(User).findOneById({ firstName: "Umed", lastName: "Khudoiberdiev" });
+const user = await connection.manager.findOne(User, { firstName: "Timber", lastName: "Saw" });
+const user = await connection.getRepository(User).findOne({ firstName: "Timber", lastName: "Saw" });
 ```
 
 ### Special columns
@@ -251,7 +251,7 @@ or
 `character varying`, `character`, `varchar`, `char`, `text`, `citext`,
 `smallserial`, `serial2`, `serial`, `serial4`, `bigserial`, `serial8`, 
 `money`, `boolean`, `bool` `bytea`, `date`, `interval`, `point`, `line`, `lseg`, `box`, 
-`circle`, `path`, `polygon`, `cidr`, `inet`, `macaddr`, `bit`, `bit varying`,
+`circle`, `path`, `polygon`, `cidr`, `enum`, `inet`, `macaddr`, `bit`, `bit varying`,
  `varbit`, `tsvector`, `tsquery`, `uuid`, `xml`, `json`, `jsonb` 
 
 ### Column types for `sqlite` / `websql` / `cordova`
@@ -547,9 +547,10 @@ To learn more about closure table take a look at [this awesome presentation by B
 Example:
 
 ```typescript
-import {ClosureEntity, Column, PrimaryGeneratedColumn, TreeChildren, TreeParent, TreeLevelColumn} from "typeorm";
+import {Entity, Tree, Column, PrimaryGeneratedColumn, TreeChildren, TreeParent, TreeLevelColumn} from "typeorm";
 
-@ClosureEntity()
+@Entity()
+@Tree("closure-table")
 export class Category {
 
     @PrimaryGeneratedColumn()

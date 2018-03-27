@@ -386,14 +386,6 @@ export class Gulpfile {
         ];
     }
 
-    /**
-     * Compiles the code and runs only mocha tests.
-     */
-    @SequenceTask()
-    mocha() {
-        return ["compile", "quickTests"];
-    }
-
     // -------------------------------------------------------------------------
     // CI tasks
     // -------------------------------------------------------------------------
