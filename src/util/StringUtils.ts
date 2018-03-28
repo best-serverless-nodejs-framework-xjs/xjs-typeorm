@@ -32,9 +32,10 @@ export function titleCase(str: string): string {
  * Builds abbreviated string from given string;
  */
 export function abbreviate(str: string, abbrLettersCount: number = 1): string {
-    const words = str.replace(/([a-z\xE0-\xFF])([A-Z\xC0\xDF])/g, "$1 $2").split(" ");
-    return words.reduce((res, word) => {
-        res += word.substr(0, abbrLettersCount);
-        return res;
-    }, "");
+    return str
+    // const words = str.replace(/([a-z\xE0-\xFF])([A-Z\xC0\xDF])/g, "$1 $2").split(" ");
+    // return words.reduce((res, word) => {
+    //     res += word.substr(0, abbrLettersCount);
+    //     return res;
+    // }, "");
 }
